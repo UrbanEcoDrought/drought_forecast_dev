@@ -1,0 +1,8 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+figures/*
+processed_data/*
+input_data/*
+meow/*
