@@ -21,12 +21,16 @@ thorn.dat2$doy <- yday(thorn.dat2$date)
 
 # creating a monthly mean value for NDVI
 thorn.dat.month <- aggregate(meanNDVI~year + month, data=thorn.dat2, FUN="mean")
+thorn.dat.month$meanNDVI.sd <- aggregate(meanNDVI~year + month, data=thorn.dat2, FUN="sd")$meanNDVI
+
 # adding a date variable
 thorn.dat.month$date <- paste(thorn.dat.month$year, thorn.dat.month$month, "01", sep="-")
 thorn.dat.month$date <- as.Date(thorn.dat.month$date, format="%Y-%m-%d")
 # making negative numbers equal to zero
 thorn.dat2$meanNDVI[thorn.dat2$meanNDVI < 0] <- 0
 
+saveRDS(thorn.dat2, "processed_data/thornhill_ndvi.rds")
+saveRDS(thorn.dat.month, "processed_data/thornhill_ndvi_monthly.rds")
 
 ggplot(data=thorn.dat.month) +
   geom_density(aes(x=meanNDVI))
@@ -121,8 +125,10 @@ plot(out[,1],out[,2],pch=".",xlab=colnames(out)[1],ylab=colnames(out)[2])
 cor(out[,1:2])
 
 
-
+# Model with weather/climate data----
 #########################################
+
+
 # model from EFI course with a climate driver
 model_RandomWalk <- function() {
   "
