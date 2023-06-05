@@ -1,4 +1,10 @@
 # Model with weather/climate data----
+library(rjags)
+library(coda)
+library(readxl)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
 #########################################
 # Borrowing code from teh EFI course. Using hind-casted data, will need to step through time
 
@@ -56,9 +62,9 @@ outdir <- "processed_data/forecast_test/"
 # starting point
 mindate = min(all_dat$date)
 batch = 1
-date_list = seq(mindate + months(batch), max(thorn.dat2$date), by = paste0(batch, " month"))
+date_list = seq(mindate + months(batch), max(thorn.dat.month$date), by = paste0(batch, " month"))
 RandomWalk = model_RandomWalk()
-forecasts = run_model(date_list, RandomWalk, all_dat, batch, mindate)
+# forecasts = run_model(date_list, RandomWalk, all_dat, batch, mindate)
 # tar_render(EDA, "docs/EDA.Rmd", output_format = "all"),
 # tar_render(README, "README.Rmd", output_format = "all")
 
@@ -205,10 +211,12 @@ run_model <- function(date_list, RandomWalk, all_dat, batch, mindate, outdir = "
       geom_point(aes(x = date, y = vpd), col = "light green") +
       geom_ribbon(aes(x = date, ymin = `2.5%`, ymax = `97.5%`), fill = "blue", alpha = 0.5) +
       geom_line(aes(x = date, y = `50%`), col = "blue") +
+      scale_y_continuous(limits = c(-80, 80))
       #facet_wrap(. ~ site) +
       theme_classic()
     ggsave(paste0(outdir, today, "/plot.pdf"), p)
-    
+    ggsave(paste0("figures/test_forecast/", today, "_plot.png"), p)
     print (paste0(today, " completed."))
   }
 }
+
