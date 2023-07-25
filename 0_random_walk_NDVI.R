@@ -4,6 +4,7 @@ library(coda)
 library(readxl)
 library(lubridate)
 library(ggplot2)
+library(ecoforecastR)
 # going to work with Thornhill data for now to test out the jags code
 
 thorn.dat <- read.csv("input_data/NDVI_Thornhill.csv", header=T)
@@ -127,34 +128,41 @@ cor(out[,1:2])
 
 # Model with weather/climate data----
 #########################################
+# Using Mike's Dynamic linear model framework from Exercise 6
+
+## grab weather data--Using VDP index that was calculated for the Morton
+mort.clim.dat <- read.csv("../data_explore/input_data/morton_stacked_drought_indices.csv", header=T)
+
+mort.vpd.index <- mort.clim.dat[mort.clim.dat$index=="vpd.index.value",]
+# creating a date variable
+mort.vpd.index$date <- as.Date(paste(mort.vpd.index$year, mort.vpd.index$month, "01", sep="-"))
+summary(mort.vpd.index)
 
 
-# model from EFI course with a climate driver
-model_RandomWalk <- function() {
-  "
-model{
-  
-  for (s in 1:ns) {
-    #### Data Model
-    for(t in 1:nt){
-      gcc[t, s] ~ dnorm(x[t, s],tau_obs_gcc)
-      evi[t, s] ~ dnorm(x[t, s],tau_obs_evi)
-    }
-    
-    #### Process Model
-    for(t in 2:nt){
-      x[t, s]~dnorm(x[t-1, s],tau_add)
-    }
-  }
-  
-  
-  #### Priors
-  for (s in 1:ns) {
-     x[1, s] ~ dnorm(x_ic[s],tau_ic[s])
-  }
-  tau_obs_gcc ~ dgamma(a_obs_gcc,r_obs_gcc)
-  tau_obs_evi ~ dgamma(a_obs_evi,r_obs_evi)
-  tau_add ~ dgamma(a_add,r_add)
+# refreshing on the format of object 'data'
+head(data)
+
+data$vpd = -1*mort.vpd.index$mean.month[match(time,mort.vpd.index$date)] # we have a monthly timestep in both the NDVI and the VPD data
+
+## fit the model
+ef.out <- ecoforecastR::fit_dlm(model=list(obs="y",fixed="~ 1 + X + vpd"),data)
+names(ef.out)
+
+
+## parameter diagnostics
+params <- window(ef.out$params,start=1000) ## remove burn-in
+plot(params)
+summary(params)
+cor(as.matrix(params))
+pairs(as.matrix(params))
+
+## confidence interval
+out <- as.matrix(ef.out$predict)
+ci <- apply(out,2,quantile,c(0.025,0.5,0.975))
+plot(time,ci[2,],type='n',ylim=range(y,na.rm=TRUE),ylab="NDVI",xlim=time[time.rng])
+## adjust x-axis label to be monthly if zoomed
+if(diff(time.rng) < 100){ 
+  axis.Date(1, at=seq(time[time.rng[1]],time[time.rng[2]],by='month'), format = "%Y-%m")
 }
-"
-}
+ecoforecastR::ciEnvelope(time,ci[1,],ci[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
+points(time,y,pch="+",cex=0.5)

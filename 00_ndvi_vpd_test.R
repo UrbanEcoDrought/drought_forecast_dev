@@ -6,12 +6,14 @@ library(lubridate)
 library(ggplot2)
 library(tidyverse)
 #########################################
-# Borrowing code from teh EFI course. Using hind-casted data, will need to step through time
+# Borrowing code from the EFI course. Using hind-casted data, will need to step through time
+google.path <- file.path("G:/Shared drives/Urban Ecological Drought/data/r_files/")
 
 # loading in NDVI data
-thorn.dat.month <- readRDS("processed_data/thornhill_ndvi_monthly.rds")
+thorn.dat.month <- readRDS(file.path(google.path,"processed_files/thornhill_ndvi_monthly.rds"))
+
 summary(thorn.dat.month)
-mort.clim.dat <- read.csv("../data_explore/input_data/morton_stacked_drought_indices.csv", header=T)
+mort.clim.dat <- read.csv(file.path(google.path,"/input_files/data_explore/morton_stacked_drought_indices.csv"), header=T)
 
 mort.vpd.index <- mort.clim.dat[mort.clim.dat$index=="vpd.index.value",]
 # creating a date variable
@@ -23,6 +25,7 @@ mort.vpd.index2 <- mort.vpd.index[mort.vpd.index$date %in% thorn.dat.month$date,
 
 # model from EFI course with a climate driver
 # Sets the model structure
+# The s loops won't apply here, because we aren't looking across sites or land cover type yet.
 model_RandomWalk <- function() {
   "
 model{
@@ -36,7 +39,8 @@ model{
     
     #### Process Model
     for(t in 2:nt){
-      x[t, s]~dnorm(x[t-1, s],tau_add)
+      x[t, s]~ dgamma(x[t-1, s] + Beta[1]*dnorm(vpd[t-1], tau_obs_vpd),tau_add) # RA: NEED TO FIND OUT HOW TO CODE IN THE BETA HERE.
+      
     }
   }
   
@@ -57,7 +61,8 @@ model{
 
 all_dat <- thorn.dat.month
 all_dat$vpd <- mort.vpd.index2$mean.month[match(mort.vpd.index2$date,thorn.dat.month$date)]
-outdir <- "processed_data/forecast_test/"
+
+outdir <- file.path(google.path, "processed_files/forecast_test")
 
 # starting point
 mindate = min(all_dat$date)
@@ -74,7 +79,11 @@ run_model <- function(date_list, RandomWalk, all_dat, batch, mindate, outdir = "
     today <- date_list[d]
     
     # create dir
-    dir.create(paste0(outdir, today), recursive = T)
+    if (!dir.exists(file.path(outdir, today))){
+      dir.create(file.path(outdir,today))
+    }
+    
+    # dir.create(paste0(outdir, today), recursive = T)
     
     # subset data
     dat_new <- all_dat %>%
@@ -120,7 +129,7 @@ run_model <- function(date_list, RandomWalk, all_dat, batch, mindate, outdir = "
         a_add = 1, r_add = 1 ## process error prior
       )
     } else {
-      # load prvpdous model
+      # load previous model
       prev_day <- date_list[d - 1]
       priors <- read_rds(paste0(outdir, prev_day, "/posterior.rds"))
     }
@@ -207,10 +216,10 @@ run_model <- function(date_list, RandomWalk, all_dat, batch, mindate, outdir = "
     write_rds(dat_fitted, paste0(outdir, today, "/data.rds"))
     
     p <- ggplot(dat_fitted) +
-      geom_line(aes(x = date, y = ndvi), col = "dark green") +
-      geom_point(aes(x = date, y = vpd), col = "light green") +
+      #geom_point(aes(x = date, y = vpd), col = "light green") +
       geom_ribbon(aes(x = date, ymin = `2.5%`, ymax = `97.5%`), fill = "blue", alpha = 0.5) +
       geom_line(aes(x = date, y = `50%`), col = "blue") +
+      geom_line(aes(x = date, y = ndvi), col = "dark green", linewidth=1.5) +
       scale_y_continuous(limits = c(-80, 80))
       #facet_wrap(. ~ site) +
       theme_classic()
