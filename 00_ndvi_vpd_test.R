@@ -6,6 +6,8 @@ library(lubridate)
 library(ggplot2)
 library(tidyverse)
 #########################################
+# pulling inspiration from Exercise 5b from the EFI activities.
+
 # Borrowing code from the EFI course. Using hind-casted data, will need to step through time
 google.path <- file.path("G:/Shared drives/Urban Ecological Drought/data/r_files/")
 
@@ -13,7 +15,11 @@ google.path <- file.path("G:/Shared drives/Urban Ecological Drought/data/r_files
 thorn.dat.month <- readRDS(file.path(google.path,"processed_files/thornhill_ndvi_monthly.rds"))
 
 summary(thorn.dat.month)
+
+
 mort.clim.dat <- read.csv(file.path(google.path,"/input_files/data_explore/morton_stacked_drought_indices.csv"), header=T)
+
+
 
 mort.vpd.index <- mort.clim.dat[mort.clim.dat$index=="vpd.index.value",]
 # creating a date variable
@@ -21,211 +27,116 @@ mort.vpd.index$date <- as.Date(paste(mort.vpd.index$year, mort.vpd.index$month, 
 summary(mort.vpd.index)
 
 mort.vpd.index2 <- mort.vpd.index[mort.vpd.index$date %in% thorn.dat.month$date,]
+head(mort.vpd.index2)
 
+# creating ndvi index
+mean.ndvi <- aggregate(meanNDVI ~ month, FUN=mean, data=thorn.dat.month)
+head(mean.ndvi)
+
+thorn.dat.month$mean.ndvi.agg <- mean.ndvi$meanNDVI[match(thorn.dat.month$month, mean.ndvi$month)]
+head(thorn.dat.month)
+
+thorn.dat.month$ndvi.index <- thorn.dat.month$meanNDVI/thorn.dat.month$mean.ndvi.agg
+
+# making some of the data blank, because this is what we will be modeling
+#thorn.dat.month$model.ndvi.index <- ifelse(thorn.dat.month$date >= "2020-01-01", NA, thorn.dat.month$ndvi.index)
+
+
+
+library(ggplot2)
+ggplot(data=thorn.dat.month) +
+  geom_line(aes(x=date, y=meanNDVI ))
+
+acf(thorn.dat.month$meanNDVI) # not much autocorrelation, but the detrending is pretty harsh here.
+
+# need to combine ndvi and vpd index into a single list file
+data <- list(ndvi = thorn.dat.month$model.ndvi[order(thorn.dat.month$date, decreasing = F) & thorn.dat.month$date < "2020-01-01"],
+             vpd = mort.vpd.index2$mean.month[order(thorn.dat.month$date, decreasing = F)& thorn.dat.month$date < "2020-01-01"],
+             #time = thorn.dat.month$date[order(thorn.dat.month$date, decreasing = F)],
+             nt = length(thorn.dat.month$date[thorn.dat.month$date < "2020-01-01"]))
+
+# quick lm to see what the relationship might look like 
+test <- lm(thorn.dat.month$model.ndvi[order(thorn.dat.month$date, decreasing = F)] ~ mort.vpd.index2$mean.month[order(thorn.dat.month$date, decreasing = F)]-1)
+summary(test)
 
 # model from EFI course with a climate driver
 # Sets the model structure
 # The s loops won't apply here, because we aren't looking across sites or land cover type yet.
-model_RandomWalk <- function() {
-  "
+univariate_regression <- "
 model{
+
+  beta ~ dmnorm(b0,Vb)  	## multivariate Normal prior on vector of regression params
+  prec ~ dgamma(s1,s2)    ## prior precision
+  meow[1] <- 0.05356667 ## setting the seed value for NDVI
   
-  for (s in 1:ns) {
-    #### Data Model
-    for(t in 1:nt){
-      ndvi[t, s] ~ dnorm(x[t, s],tau_obs_ndvi)
-      vpd[t, s] ~ dnorm(x[t, s],tau_obs_vpd)
-    }
-    
-    #### Process Model
-    for(t in 2:nt){
-      x[t, s]~ dgamma(x[t-1, s] + Beta[1]*dnorm(vpd[t-1], tau_obs_vpd),tau_add) # RA: NEED TO FIND OUT HOW TO CODE IN THE BETA HERE.
-      
-    }
+  for(i in 2:nt){
+	  meow[i] <- beta[1] + meow[i-1] + beta[2]*vpd[i]   	## process model
+	  ndvi[i]  ~ dnorm(meow[i],prec)		        ## data model
   }
-  
-  
-  #### Priors
-  for (s in 1:ns) {
-     x[1, s] ~ dnorm(x_ic[s],tau_ic[s])
-  }
-  tau_obs_ndvi ~ dgamma(a_obs_ndvi,r_obs_ndvi)
-  tau_obs_vpd ~ dgamma(a_obs_vpd,r_obs_vpd)
-  tau_add ~ dgamma(a_add,r_add)
 }
 "
+
+## specify priors- uninformative
+
+data$b0 <- as.vector(c(0,0))      ## regression beta means
+data$Vb <- solve(diag(10000,2))   ## regression beta precisions
+data$s1 <- 0.1                    ## error prior n/2
+data$s2 <- 0.1                    ## error prior SS/2
+
+## initial conditions
+nchain = 3
+inits <- list()
+for(i in 1:nchain){
+  inits[[i]] <- list(beta = rnorm(2,0,5), prec = runif(1,1/100,1/20))
 }
 
-# creating a list of dates to simulate through
-# date_list <- unique(thorn.dat.month$date)
+j.model   <- jags.model(file = textConnection(univariate_regression),
+                        data = data,
+                        inits = inits,
+                        n.chains = nchain)
 
-all_dat <- thorn.dat.month
-all_dat$vpd <- mort.vpd.index2$mean.month[match(mort.vpd.index2$date,thorn.dat.month$date)]
+var.out   <- coda.samples (model = j.model,
+                           variable.names = c("beta","prec"),
+                           n.iter = 10000)
+## remember to assess convergence and remove burn-in before doing other diagnostics
+GBR <- gelman.plot(var.out)
+burnin <- 8000
+var.burn <- window(var.out,start=burnin)
+## convert to matrix
+var.mat      <- as.matrix(var.burn)
 
-outdir <- file.path(google.path, "processed_files/forecast_test")
+## Pairwise scatter plots & correlation
+pairs(var.mat)	## pairs plot to evaluate parameter correlation
+cor(var.mat)    ## correlation matrix among model parameters
 
-# starting point
-mindate = min(all_dat$date)
-batch = 1
-date_list = seq(mindate + months(batch), max(thorn.dat.month$date), by = paste0(batch, " month"))
-RandomWalk = model_RandomWalk()
-# forecasts = run_model(date_list, RandomWalk, all_dat, batch, mindate)
-# tar_render(EDA, "docs/EDA.Rmd", output_format = "all"),
-# tar_render(README, "README.Rmd", output_format = "all")
 
-# Runs the model through time----
-run_model <- function(date_list, RandomWalk, all_dat, batch, mindate, outdir = "./forecasts/") {
-  for (d in 1:length(date_list)) {
-    today <- date_list[d]
-    
-    # create dir
-    if (!dir.exists(file.path(outdir, today))){
-      dir.create(file.path(outdir,today))
-    }
-    
-    # dir.create(paste0(outdir, today), recursive = T)
-    
-    # subset data
-    dat_new <- all_dat %>%
-      filter(date >= today-months(batch)) %>%
-      mutate( # set data after today to NA
-        ndvi = case_when(date < today ~ meanNDVI),
-        #ndvi_sd = case_when(date < today ~ ndvi_sd),
-        vpd2 = case_when(date < today ~ vpd),
-        #vpd_sd = case_when(date < today ~ vpd_sd)
-      )
-    
-    # make matrices for observations
-    ndvi <- dat_new %>%
-      dplyr::select(date, ndvi) %>%
-      #spread(key = "site", value = "ndvi_90") %>%
-      dplyr::select(-date) %>%
-      as.matrix()
-    vpd <- dat_new %>%
-      dplyr::select(date, vpd2) %>%
-      #spread(key = "site", value = "vpd") %>%
-      dplyr::select(-date) %>%
-      as.matrix()
-    
-    # load prvpdous data
-    if (d ==1) {
-      
-      dat_old <- all_dat %>%
-        filter(date>=mindate) %>% 
-        head(0)
-    } else {
-      prev_day <- date_list[d - 1]
-      dat_old<-read_rds(paste0(outdir, prev_day, "/data.rds")) %>% 
-        filter(date<prev_day)
-    }
-    
-    # load priors
-    if (d == 1) {
-      # initialize
-      priors <- list(
-        x_ic = rep(0, ncol(ndvi)), tau_ic = rep(10, ncol(ndvi)), ## initial condition prior
-        a_obs_ndvi = 1, r_obs_ndvi = 1, ## obs error prior
-        a_obs_vpd = 1, r_obs_vpd = 1, ## obs error prior
-        a_add = 1, r_add = 1 ## process error prior
-      )
-    } else {
-      # load previous model
-      prev_day <- date_list[d - 1]
-      priors <- read_rds(paste0(outdir, prev_day, "/posterior.rds"))
-    }
-    
-    
-    # Setting data and prior for the model
-    data <- c(
-      list(
-        ndvi = ndvi,
-        vpd = vpd,
-        nt = nrow(ndvi),
-        ns = ncol(ndvi) ## data
-      ),
-      priors
-    )
-    
-    
-    ####
-    # Defining the initial state of each of the chains we are going to run
-    
-    nchain <- 3
-    init <- list()
-    for (i in 1:nchain) {
-      # y.samp = sample(y,length(y),replace=TRUE)
-      # init[[i]] <- list(tau_add=1/var(diff(y.samp)),  ## initial guess on process precision
-      #                   tau_obs=5/var(y.samp))        ## initial guess on obs precision
-      init[[i]] <- list(
-        tau_add = 500, ## initial guess on process precision
-        tau_obs_ndvi = 500,
-        tau_obs_vpd = 500
-      ) ## initial guess on obs precision
-    }
-    
-    ####
-    # Presenting basic model to JAGS
-    j.model <- jags.model(
-      file = textConnection(RandomWalk),
-      data = data,
-      inits = init,
-      n.chains = 3
-    )
-    
-    # run MCMC
-    jags.out <- coda.samples(
-      model = j.model,
-      variable.names = c("x", "tau_add", "tau_obs_ndvi", "tau_obs_vpd"),
-      n.iter = 1000
-    )
-    out <- as.matrix(jags.out) ## convert from coda to matrix
-    
-    # Save posteriors
-    x_ic <- tau_ic <- rep(NA, ncol(ndvi))
-    for (s in 1:ncol(ndvi)) {
-      x.col <- paste0("x[", batch+1, ",", s, "]")
-      x_ic[s] <- mean(out[, x.col])
-      tau_ic[s] <- 1 / sd(out[, x.col])^2
-    }
-    mu_obs_ndvi<-mean(out[, "tau_obs_ndvi"])
-    sd_obs_ndvi<-sd(out[, "tau_obs_ndvi"])
-    mu_obs_vpd<-mean(out[, "tau_obs_vpd"])
-    sd_obs_vpd<-sd(out[, "tau_obs_vpd"])
-    mu_add<-mean(out[, "tau_add"])
-    sd_add<-sd(out[, "tau_add"])
-    
-    posteriors <- list(
-      x_ic = x_ic, tau_ic = tau_ic, ## initial condition prior
-      a_obs_ndvi = (mu_obs_ndvi/sd_obs_ndvi)^2,
-      r_obs_ndvi =mu_obs_ndvi/sd_obs_ndvi^2, ## obs error prior
-      a_obs_vpd = (mu_obs_vpd/sd_obs_vpd)^2,
-      r_obs_vpd = mu_obs_vpd/sd_obs_vpd^2, ## obs error prior
-      a_add = (mu_add/sd_add)^2,
-      r_add = mu_add/sd_add^2
-    )
-    write_rds(posteriors, paste0(outdir, today, "/posterior.rds"))
-    
-    # plot
-    x.cols <- grep("^x", colnames(out)) ## grab all columns that start with the letter x
-    ci <- apply(out[, x.cols], 2, quantile, c(0.025, 0.5, 0.975)) ## model was fit on log scale
-    
-    dat_fitted <- bind_rows(dat_old,
-                            dat_new %>%
-                              cbind(t(ci))
-    )
-    write_rds(dat_fitted, paste0(outdir, today, "/data.rds"))
-    
-    p <- ggplot(dat_fitted) +
-      #geom_point(aes(x = date, y = vpd), col = "light green") +
-      geom_ribbon(aes(x = date, ymin = `2.5%`, ymax = `97.5%`), fill = "blue", alpha = 0.5) +
-      geom_line(aes(x = date, y = `50%`), col = "blue") +
-      geom_line(aes(x = date, y = ndvi), col = "dark green", linewidth=1.5) +
-      scale_y_continuous(limits = c(-80, 80))
-      #facet_wrap(. ~ site) +
-      theme_classic()
-    ggsave(paste0(outdir, today, "/plot.pdf"), p)
-    ggsave(paste0("figures/test_forecast/", today, "_plot.png"), p)
-    print (paste0(today, " completed."))
-  }
+xpred <- mort.vpd.index2$mean.month[mort.vpd.index2$date >= "2020-01-01"]
+plot(data$vpd, data$ndvi)
+for(i in 1:10){
+  lines(xpred, var.mat[i,"beta[1]"] + var.mat[i,"beta[2]"]*xpred)
 }
 
+
+nsamp <- 5000
+samp <- sample.int(nrow(var.mat),nsamp)
+xpred <- mort.vpd.index2$mean.month[mort.vpd.index2$date >= "2020-01-01"]					## sequence of x values we're going to
+npred <- length(xpred)				##      make predictions for
+ypred <- matrix(0.0,nrow=nsamp,ncol=npred)	## storage for predictive interval
+ycred <- matrix(0.0,nrow=nsamp,ncol=npred)	## storage for credible interval
+
+for(g in seq_len(nsamp)){
+  theta = var.mat[samp[g],]
+  ycred[g,] <- theta["beta[1]"] + theta["beta[2]"]*xpred
+  ypred[g,] <- rnorm(npred,ycred[g,],1/sqrt(theta["prec"]))
+}
+
+ci <- apply(ycred,2,quantile,c(0.025,0.5,0.975))  ## credible interval and median
+pi <- apply(ypred,2,quantile,c(0.025,0.975))		## prediction interval
+
+plot(data$vpd,data$ndvi,cex=0.5,xlim=c(0,max(data$vpd)),ylim=c(0,max(data$ndvi, na.rm=T)))
+lines(xpred,ci[1,],col=3,lty=2)	## lower CI
+lines(xpred,ci[2,],col=3,lwd=3)	## median
+lines(xpred,ci[3,],col=3,lty=2)	## upper CI
+lines(xpred,pi[1,],col=4,lty=2)	## lower PI
+lines(xpred,pi[2,],col=4,lty=2)	## upper PI
+abline(b0,b1)				## true model
