@@ -9,16 +9,30 @@ library(tidyverse)
 # pulling inspiration from Exercise 5b from the EFI activities.
 
 # Borrowing code from the EFI course. Using hind-casted data, will need to step through time
-google.path <- file.path("G:/Shared drives/Urban Ecological Drought/data/r_files/")
+google.path <- file.path("G:/Shared drives/Urban Ecological Drought")
 
 # loading in NDVI data
-thorn.dat.month <- readRDS(file.path(google.path,"processed_files/thornhill_ndvi_monthly.rds"))
 
-summary(thorn.dat.month)
+low.urban.ndvi <- read.csv(file.path(google.path, "Neighborhood remote sensing analysis/Landsat NDVI/Chi-NDVI-UrbanLow-Landsat_5-9.csv"), header=T)
+head(low.urban.ndvi)
+
+low.urban.ndvi$time <- as_date(low.urban.ndvi$time)
+summary(low.urban.ndvi)
+
+low.urban.ndvi$month <- month(low.urban.ndvi$time)
+
+ggplot(data=low.urban.ndvi) +
+  geom_line(aes(x=time, y=NDVI))
+
+ggplot(data=low.urban.ndvi[is.na(low.urban.ndvi$NDVI),])+
+  geom_histogram(aes(x=month), bins=12, col="green") # how can we handle NA's in the data frame?
 
 
-mort.clim.dat <- read.csv(file.path(google.path,"/input_files/data_explore/morton_stacked_drought_indices.csv"), header=T)
+# looking to see where NDVI dates are falling
 
+
+mort.clim.dat <- read.csv(file.path(google.path,"data/r_files/input_files/data_explore/morton_stacked_drought_indices.csv"), header=T)
+head(mort.clim.dat)
 
 
 mort.vpd.index <- mort.clim.dat[mort.clim.dat$index=="vpd.index.value",]
