@@ -99,7 +99,6 @@ gefs_urls <- function(ens,
     "pgrb2sp25.0p25.", # Changed from 0p50
     "f", horizon)
   gribs
-  print("Meow!!")
 }
 
 #' gefs_view

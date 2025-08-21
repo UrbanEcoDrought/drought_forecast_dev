@@ -72,7 +72,7 @@ load_spatial_ndvi_anomalies <- function(file_path = NULL, format = "csv") {
     arrange(year, day_of_year, longitude, latitude)
   
   cat("Loaded", nrow(ndvi_processed), "spatial NDVI anomaly observations\n")
-  cat("Date range:", min(ndvi_processed$date, na.rm = TRUE), "to", max(ndvi_processed$date, na.rm = TRUE), "\n")
+  cat("Date range:", as.character(min(ndvi_processed$date, na.rm = TRUE)), "to", as.character(max(ndvi_processed$date, na.rm = TRUE)), "\n")
   cat("Year range:", min(ndvi_processed$year), "to", max(ndvi_processed$year), "\n")
   cat("Day of year range:", min(ndvi_processed$day_of_year), "to", max(ndvi_processed$day_of_year), "\n")
   cat("Spatial extent:\n")
@@ -183,7 +183,7 @@ summarize_ndvi_by_gefs <- function(ndvi_gefs_data) {
 }
 
 # Function to save processed data
-save_processed_ndvi <- function(ndvi_data, output_path = "forecast_workflow/data/processed_ndvi_anomalies.rds") {
+save_processed_ndvi <- function(ndvi_data, output_path = "U:/datasets/ndvi_monitor/processed_ndvi_anomalies.rds") {
   
   dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
   saveRDS(ndvi_data, output_path)
@@ -232,7 +232,7 @@ run_spatial_ndvi_processing <- function(save_output = TRUE) {
   ndvi_with_gefs <- create_gefs_grid_overlay(ndvi_spatial)
   
   if (save_output) {
-    save_processed_ndvi(ndvi_with_gefs, "forecast_workflow/data/processed_spatial_ndvi_anomalies.rds")
+    save_processed_ndvi(ndvi_with_gefs, "U:/datasets/ndvi_monitor/processed_spatial_ndvi_anomalies.rds")
   }
   
   return(ndvi_with_gefs)

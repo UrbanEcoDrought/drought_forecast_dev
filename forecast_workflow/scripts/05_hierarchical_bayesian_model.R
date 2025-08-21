@@ -251,11 +251,21 @@ evaluate_forecasts <- function(forecast_results) {
   ))
 }
 
+# Function to save model results
+save_model_results <- function(results, output_path = "U:/datasets/ndvi_monitor/hierarchical_forecast_results.rds") {
+  
+  dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+  saveRDS(results, output_path)
+  cat("Model results saved to:", output_path, "\n")
+  
+}
+
 # Main workflow function
 run_hierarchical_forecast_model <- function(integrated_data,
                                            train_end = "2022-12-31", 
                                            fit_model = TRUE,
-                                           generate_forecast = TRUE) {
+                                           generate_forecast = TRUE,
+                                           save_output = TRUE) {
   
   cat("Starting hierarchical Bayesian NDVI forecast workflow...\n")
   
@@ -273,12 +283,18 @@ run_hierarchical_forecast_model <- function(integrated_data,
       # Evaluate performance
       performance <- evaluate_forecasts(forecasts)
       
-      return(list(
+      results <- list(
         model_data = model_data,
         model_fit = model_fit,
         forecasts = forecasts,
         performance = performance
-      ))
+      )
+      
+      if (save_output) {
+        save_model_results(results)
+      }
+      
+      return(results)
     } else {
       return(list(
         model_data = model_data,

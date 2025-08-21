@@ -1,12 +1,15 @@
-# GEFS Climate Data Integration Script
+# GEFS Climate Data Integration Script  
 # Integrates NOAA GEFS 0.25° climate data with NDVI grid structure
 
 library(tidyverse)
 library(sf)
 library(lubridate)
 library(httr)
+library(gdalcubes)
+library(stars)
 
-# Custom GEFS functions for drought forecasting
+# Load the existing GEFS functions (path relative to project root)
+source("../../00_NOAA_GEFS_functions.R")
 
 # GEFS variable mapping for 0.25 degree data
 gefs_variables <- list(
@@ -16,28 +19,92 @@ gefs_variables <- list(
   "dswrf" = "surface/dswrf/"            # downward shortwave radiation
 )
 
-# Configuration for GEFS data
+# Configuration for GEFS data (both real-time and reforecast)
 gefs_config <- list(
   resolution = 0.25,  # degrees (0.25° = ~28km)
-  variables = names(gefs_variables),
-  ensemble = "geavg",  # Ensemble mean
-  base_url = "https://noaa-gefs-pds.s3.amazonaws.com",
-  cycle = "00"         # Daily 00Z cycle
+  variables = c("tmp", "apcp", "dswrf", "rh"),  # Core variables we need
+  # Ensemble selection (single time series)
+  realtime_ensemble = "gec00",     # Control run for real-time (2020+)
+  reforecast_ensemble = "c00",     # Control run for reforecast (2000-2019)
+  # URLs
+  realtime_url = "https://noaa-gefs-pds.s3.amazonaws.com",
+  reforecast_url = "https://noaa-gefs-retrospective.s3.amazonaws.com",
+  cycle = "00",        # Daily 00Z cycle
+  # Data periods
+  reforecast_period = c("2000-01-01", "2019-12-31"),  # Historical training
+  realtime_cutoff = "2020-01-01"  # Switch to real-time data
 )
+
+# Function to determine data source (reforecast vs real-time) based on date
+determine_gefs_source <- function(date) {
+  
+  date_obj <- as.Date(date)
+  reforecast_start <- as.Date(gefs_config$reforecast_period[1])
+  reforecast_end <- as.Date(gefs_config$reforecast_period[2])
+  realtime_start <- as.Date(gefs_config$realtime_cutoff)
+  
+  if (date_obj >= reforecast_start & date_obj <= reforecast_end) {
+    return(list(
+      source = "reforecast",
+      url = gefs_config$reforecast_url,
+      ensemble = gefs_config$reforecast_ensemble
+    ))
+  } else if (date_obj >= realtime_start) {
+    return(list(
+      source = "realtime", 
+      url = gefs_config$realtime_url,
+      ensemble = gefs_config$realtime_ensemble
+    ))
+  } else {
+    stop("Date ", date, " is outside available GEFS data range")
+  }
+}
 
 # Function to build GEFS URLs for specific variables and dates
 build_gefs_urls <- function(date, variables = gefs_config$variables, 
-                           ensemble = "geavg", cycle = "00") {
+                           ensemble = NULL, cycle = "00") {
   
+  # Determine data source
+  source_info <- determine_gefs_source(date)
   date_str <- format(as.Date(date), "%Y%m%d")
-  base_path <- paste0(gefs_config$base_url, "/gefs.", date_str, "/", cycle, "/atmos/pgrb2sp25/")
   
-  urls <- list()
-  for (var in variables) {
-    if (var %in% names(gefs_variables)) {
-      # Build URL for this variable
-      url <- paste0(base_path, ensemble, ".t", cycle, "z.pgrb2sp25.0p25.f006")  # 6-hour forecast
-      urls[[var]] <- url
+  if (source_info$source == "reforecast") {
+    # Build reforecast URLs (variable-specific GRIB2 files)
+    year <- format(as.Date(date), "%Y")
+    date_hour <- paste0(date_str, "00")
+    ensemble_member <- source_info$ensemble
+    
+    urls <- list()
+    var_mapping <- list(
+      "tmp" = "tmp_2m",
+      "apcp" = "apcp_sfc", 
+      "dswrf" = "dswrf_sfc",
+      "rh" = "rh_2m"
+    )
+    
+    for (var in variables) {
+      if (var %in% names(var_mapping)) {
+        # Reforecast path: GEFSv12/reforecast/YYYY/YYYYMMDD00/c00/Days:1-10/variable_level_date_ensemble.grib2
+        url <- paste0(
+          source_info$url, "/GEFSv12/reforecast/", year, "/", date_hour, "/",
+          ensemble_member, "/Days:1-10/", var_mapping[[var]], "_", date_hour, "_", 
+          ensemble_member, ".grib2"
+        )
+        urls[[var]] <- url
+      }
+    }
+    
+  } else {
+    # Build real-time URLs (combined parameter files)
+    ensemble_member <- source_info$ensemble
+    base_path <- paste0(source_info$url, "/gefs.", date_str, "/", cycle, "/pgrb2a/")
+    
+    urls <- list()
+    # Real-time uses single file with all variables
+    url <- paste0(base_path, ensemble_member, ".t", cycle, "z.pgrb2a.0p25.f006")  # 6-hour forecast
+    
+    for (var in variables) {
+      urls[[var]] <- url  # Same file contains all variables
     }
   }
   
@@ -46,13 +113,21 @@ build_gefs_urls <- function(date, variables = gefs_config$variables,
 
 # Function to check GEFS data availability for a date
 check_gefs_availability <- function(date) {
-  urls <- build_gefs_urls(date, variables = "tmp2m")
   
   tryCatch({
+    source_info <- determine_gefs_source(date)
+    urls <- build_gefs_urls(date, variables = "tmp")  # Use "tmp" instead of "tmp2m"
+    
     # Try to access the URL to see if data exists
-    response <- httr::HEAD(urls[["tmp2m"]])
-    return(httr::status_code(response) == 200)
+    response <- httr::HEAD(urls[["tmp"]])
+    available <- httr::status_code(response) == 200
+    
+    cat("Data source:", source_info$source, "\n")
+    cat("Ensemble:", source_info$ensemble, "\n")
+    
+    return(available)
   }, error = function(e) {
+    cat("Error checking availability:", e$message, "\n")
     return(FALSE)
   })
 }
@@ -120,23 +195,91 @@ create_synthetic_climate_data <- function(gefs_centers,
   return(climate_data)
 }
 
-# Function to pull real GEFS data (placeholder for now)
+# Function to pull real GEFS data using existing GEFS functions
 get_real_gefs_data <- function(gefs_centers, start_date, end_date) {
   
-  cat("Real GEFS data retrieval not yet implemented.\n")
-  cat("Using synthetic data for development.\n")
+  cat("Retrieving real GEFS climate data...\n")
   
-  # Check if recent dates are available
-  recent_date <- Sys.Date() - 7  # 7 days ago
+  # Convert GEFS centers to sf points for extraction
+  gefs_points <- gefs_centers %>%
+    st_as_sf(coords = c("longitude", "latitude"), crs = "EPSG:4326")
   
-  if (check_gefs_availability(recent_date)) {
-    cat("GEFS data appears to be available for recent dates.\n")
-  } else {
-    cat("GEFS data availability check failed.\n")
+  # Create date sequence - use monthly intervals for now
+  dates <- seq(as.Date(start_date), as.Date(end_date), by = "month")
+  
+  # Initialize list to store climate data
+  climate_data_list <- list()
+  
+  for (i in seq_along(dates)) {
+    date <- dates[i]
+    cat("Processing date:", as.character(date), "\n")
+    
+    tryCatch({
+      # Extract GEFS data for this date
+      # Use geavg (ensemble average) with selected bands
+      bands <- c("TMP", "RH", "APCP", "DSWRF")  # Temperature, humidity, precip, solar
+      
+      gefs_data <- grib_extract(
+        ens = "geavg",
+        date = date,
+        sites = gefs_points,
+        bands = bands,
+        horizon = "006"  # 6-hour forecast
+      )
+      
+      if (!is.null(gefs_data)) {
+        # Convert to data frame and process
+        climate_df <- gefs_data %>%
+          as_tibble() %>%
+          mutate(
+            date = date,
+            year = year(date),
+            month = month(date),
+            # Rename variables to match expected format
+            temp_mean = TMP - 273.15,  # Convert K to C
+            rh_mean = RH,              # Relative humidity %
+            precip_total = APCP,       # Precipitation mm
+            solar_mean = DSWRF         # Solar radiation W/m2
+          ) %>%
+          select(FID, date, year, month, temp_mean, rh_mean, precip_total, solar_mean) %>%
+          # Add GEFS cell IDs based on FID
+          mutate(gefs_cell_id = gefs_centers$gefs_cell_id[FID])
+        
+        climate_data_list[[i]] <- climate_df
+        cat("Successfully retrieved data for", nrow(climate_df), "GEFS cells\n")
+      }
+      
+    }, error = function(e) {
+      cat("Error retrieving GEFS data for", as.character(date), ":", e$message, "\n")
+      cat("Falling back to synthetic data for this date\n")
+      
+      # Create synthetic data for this date if real data fails
+      synthetic_df <- expand_grid(
+        gefs_cell_id = gefs_centers$gefs_cell_id,
+        date = date
+      ) %>%
+        mutate(
+          year = year(date),
+          month = month(date),
+          temp_mean = 15 + 10 * sin(2 * pi * (month - 1) / 12) + rnorm(n(), 0, 2),
+          rh_mean = 65 + 10 * sin(2 * pi * (month - 6) / 12) + rnorm(n(), 0, 5),
+          precip_total = pmax(0, rlnorm(n(), log(50), 0.5)),
+          solar_mean = 200 + 100 * sin(2 * pi * (month - 3) / 12) + rnorm(n(), 0, 20)
+        )
+      
+      climate_data_list[[i]] <- synthetic_df
+    })
   }
   
-  # For now, return synthetic data
-  return(create_synthetic_climate_data(gefs_centers, start_date, end_date))
+  # Combine all climate data
+  climate_data <- bind_rows(climate_data_list) %>%
+    left_join(gefs_centers, by = "gefs_cell_id")
+  
+  cat("Retrieved climate data for", nrow(climate_data), "records\n")
+  cat("Date range:", range(climate_data$date), "\n")
+  cat("GEFS cells:", n_distinct(climate_data$gefs_cell_id), "\n")
+  
+  return(climate_data)
 }
 
 # Function to match climate data to GEFS cells
@@ -220,8 +363,14 @@ run_gefs_integration <- function(ndvi_gefs_data,
     integrated_data <- integrate_climate_ndvi(ndvi_gefs_data, climate_validated)
     
     if (save_output) {
-      saveRDS(integrated_data, "forecast_workflow/data/integrated_ndvi_climate.rds")
-      cat("Integrated data saved to: forecast_workflow/data/integrated_ndvi_climate.rds\n")
+      # Save to U:/ drive with other NDVI data
+      gefs_dir <- "U:/datasets/ndvi_monitor"
+      if (!dir.exists(gefs_dir)) {
+        dir.create(gefs_dir, recursive = TRUE)
+      }
+      
+      saveRDS(integrated_data, file.path(gefs_dir, "integrated_ndvi_climate.rds"))
+      cat("Integrated data saved to:", file.path(gefs_dir, "integrated_ndvi_climate.rds"), "\n")
     }
     
     return(list(
@@ -236,5 +385,6 @@ run_gefs_integration <- function(ndvi_gefs_data,
 
 cat("GEFS integration script loaded.\n")
 cat("GEFS resolution: 0.25° (~28km cells)\n") 
-cat("Variables:", paste(gefs_config$variables, collapse = ", "), "\n")
-cat("Run run_gefs_integration(ndvi_gefs_data) to integrate climate data.\n")
+cat("Variables: TMP, RH, APCP, DSWRF\n")
+cat("Data will be saved to: U:/datasets/ndvi_monitor\n")
+cat("Run run_gefs_integration(ndvi_gefs_data) to integrate real climate data.\n")

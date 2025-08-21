@@ -34,6 +34,97 @@ calculate_reference_et <- function(temp_max, temp_min, day_of_year, latitude = 4
   return(pmax(0, et_adjusted))  # ET cannot be negative
 }
 
+# Function to convert GEFS reforecast data to daily format for SPEI
+convert_reforecast_to_daily <- function(reforecast_climate, start_date, end_date) {
+  
+  cat("Converting GEFS reforecast data to daily format for SPEI calculation...\n")
+  
+  # Reforecast data is at specific dates, need to interpolate to daily
+  # For each GEFS cell, interpolate between available dates
+  
+  dates <- seq(as.Date(start_date), as.Date(end_date), by = "day")
+  
+  daily_reforecast <- expand_grid(
+    gefs_cell_id = unique(reforecast_climate$gefs_cell_id),
+    date = dates
+  ) %>%
+    mutate(
+      year = year(date),
+      month = month(date),
+      day_of_year = yday(date)
+    ) %>%
+    # For each cell, interpolate climate variables
+    group_by(gefs_cell_id) %>%
+    group_modify(~{
+      cell_climate <- filter(reforecast_climate, gefs_cell_id == .y$gefs_cell_id)
+      
+      if (nrow(cell_climate) > 0) {
+        # Linear interpolation between available reforecast dates
+        temp_interp <- approx(x = cell_climate$date, y = cell_climate$temperature, 
+                             xout = .x$date, rule = 2)$y
+        precip_interp <- approx(x = cell_climate$date, y = cell_climate$precipitation,
+                               xout = .x$date, rule = 2)$y
+        
+        .x %>%
+          mutate(
+            # Convert temperature to daily min/max (add realistic variation)
+            temp_mean = temp_interp,
+            temp_max = temp_mean + 6 + rnorm(n(), 0, 1.5),
+            temp_min = temp_mean - 6 + rnorm(n(), 0, 1.5),
+            # Use interpolated precipitation (convert to daily rates)
+            precip = pmax(0, precip_interp / 30)  # Assume monthly precip distributed over ~30 days
+          )
+      } else {
+        .x %>% mutate(temp_max = NA, temp_min = NA, precip = NA)
+      }
+    }) %>%
+    ungroup() %>%
+    filter(!is.na(temp_max))
+  
+  cat("Converted to", nrow(daily_reforecast), "daily reforecast records\n")
+  cat("Date range:", range(daily_reforecast$date), "\n")
+  
+  return(daily_reforecast)
+}
+
+# Function to convert monthly GEFS data to daily format (legacy)
+convert_monthly_to_daily <- function(monthly_climate, start_date, end_date) {
+  
+  cat("Converting monthly GEFS climate data to daily format...\n")
+  
+  # Create daily date sequence
+  dates <- seq(as.Date(start_date), as.Date(end_date), by = "day")
+  
+  # Create daily data by repeating monthly values throughout each month
+  daily_climate <- expand_grid(
+    gefs_cell_id = unique(monthly_climate$gefs_cell_id),
+    date = dates
+  ) %>%
+    mutate(
+      year = year(date),
+      month = month(date),
+      day_of_year = yday(date)
+    ) %>%
+    left_join(
+      monthly_climate %>%
+        select(gefs_cell_id, year, month, temp_mean, precip_total, solar_mean, rh_mean),
+      by = c("gefs_cell_id", "year", "month")
+    ) %>%
+    filter(!is.na(temp_mean)) %>%
+    # Convert monthly means to realistic daily values
+    mutate(
+      # Use monthly temp as base, add daily variation
+      temp_max = temp_mean + 5 + rnorm(n(), 0, 2),
+      temp_min = temp_mean - 5 + rnorm(n(), 0, 2),
+      # Convert monthly total precip to daily (assume uniform distribution)
+      precip = precip_total / days_in_month(date) + rgamma(n(), shape = 0.5, rate = 2)
+    )
+  
+  cat("Converted to", nrow(daily_climate), "daily records\n")
+  
+  return(daily_climate)
+}
+
 # Function to create synthetic daily climate data for testing
 create_synthetic_daily_climate <- function(gefs_centers, 
                                           start_date = "2001-01-01", 
@@ -215,7 +306,48 @@ save_climate_anomalies <- function(climate_data, integrated_data,
   return(anomalies_with_metadata)
 }
 
-# Main workflow function
+# Main workflow function using GEFS reforecast data
+calculate_moving_window_anomalies_with_reforecast <- function(ndvi_gefs_data, 
+                                                            reforecast_climate_data,
+                                                            start_date = "2001-01-01",
+                                                            end_date = "2015-12-31",
+                                                            save_output = TRUE) {
+  
+  cat("Starting BACKWARD moving window climate anomaly calculation with GEFS reforecast...\n")
+  cat("Method: 30-day backward temp anomalies + 14-day backward SPEI\n")
+  cat("Data source: GEFSv12 reforecast (temperature, precipitation)\n")
+  cat("All windows are RIGHT-ALIGNED (no future data used)\n")
+  
+  # Convert GEFS reforecast data to daily format
+  daily_climate <- convert_reforecast_to_daily(reforecast_climate_data, start_date, end_date)
+  
+  # Calculate temperature anomalies (30-day backward moving window)
+  climate_with_temp_anomalies <- calculate_temp_anomalies(
+    daily_climate, 
+    window_days = moving_window_config$temp_window
+  )
+  
+  # Calculate SPEI (14-day backward accumulation)
+  climate_with_anomalies <- calculate_spei_14day(
+    climate_with_temp_anomalies,
+    spei_days = moving_window_config$spei_window
+  )
+  
+  # Integrate with NDVI data
+  integrated_data <- integrate_anomalies_with_ndvi(ndvi_gefs_data, climate_with_anomalies)
+  
+  if (save_output) {
+    saved_data <- save_climate_anomalies(climate_with_anomalies, integrated_data)
+    return(saved_data)
+  } else {
+    return(list(
+      climate_anomalies = climate_with_anomalies,
+      integrated_data = integrated_data
+    ))
+  }
+}
+
+# Main workflow function (fallback with synthetic data)
 calculate_moving_window_anomalies <- function(ndvi_gefs_data, 
                                             start_date = "2001-01-01",
                                             end_date = "2023-12-31",
@@ -235,7 +367,8 @@ calculate_moving_window_anomalies <- function(ndvi_gefs_data,
     st_drop_geometry() %>%
     select(gefs_cell_id, longitude, latitude)
   
-  # Create daily climate data (synthetic for now)
+  # Use synthetic data as fallback
+  cat("Using synthetic daily climate data for testing...\n")
   daily_climate <- create_synthetic_daily_climate(gefs_centers, start_date, end_date)
   
   # Calculate temperature anomalies (30-day backward moving window)
