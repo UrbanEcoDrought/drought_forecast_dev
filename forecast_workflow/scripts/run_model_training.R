@@ -97,9 +97,8 @@ model_data <- training_data %>%
     ndvi_lag1 = lag(ndvi_anomaly, 1),
     # Time index within each cell
     time_idx = row_number(),
-    # Standardize predictors for better convergence
-    temp_max_anomaly_std = scale(temp_max_anomaly)[,1],
-    spei_14_std = scale(spei_14)[,1]
+    # Note: temp_max_anomaly and spei_14 are already standardized/anomalies from data pipeline
+    # No additional standardization needed - preserves interpretable drought thresholds
   ) %>%
   ungroup() %>%
   # Add spatial coordinates
@@ -131,9 +130,9 @@ cat("  Cells with data:", n_distinct(model_data$gefs_cell_id), "\n\n")
 # Define model formulas
 cat("=== DEFINING MODEL FORMULAS ===\n")
 
-# Base formula
+# Base formula - using original predictors (already standardized in pipeline)
 base_formula <- paste(model_config$response_var, "~", 
-                      paste(paste0(model_config$predictors, "_std"), collapse = " + "))
+                      paste(model_config$predictors, collapse = " + "))
 
 # Model variants to fit
 model_formulas <- list(
@@ -144,10 +143,10 @@ model_formulas <- list(
   ar1 = as.formula(paste(base_formula, "+ ndvi_lag1 + (1|gefs_cell_factor)")),
   
   # Model 3: With random slopes
-  random_slopes = as.formula(paste(base_formula, "+ (temp_max_anomaly_std + spei_14_std|gefs_cell_factor)")),
+  random_slopes = as.formula(paste(base_formula, "+ (temp_max_anomaly + spei_14|gefs_cell_factor)")),
   
   # Model 4: AR(1) + random slopes  
-  full = as.formula(paste(base_formula, "+ ndvi_lag1 + (temp_max_anomaly_std + spei_14_std|gefs_cell_factor)"))
+  full = as.formula(paste(base_formula, "+ ndvi_lag1 + (temp_max_anomaly + spei_14|gefs_cell_factor)"))
 )
 
 # Add spatial smoother if requested
